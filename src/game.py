@@ -5,6 +5,7 @@ from src.settings import *
 from src.bird import Bird
 from src.pipe import Pipe
 from src.ui import Button, draw_text, draw_medals
+from src.genetic_algorithm import GeneticAlgorithm
 
 class Game:
     def __init__(self):
@@ -26,6 +27,13 @@ class Game:
         
         self.bird = Bird()
         self.bird_group.add(self.bird)
+        
+        # AI Training
+        self.ai_birds = []
+        self.ga = GeneticAlgorithm(population_size=50)
+        self.ai_brains = []
+        self.ai_generation_start_time = 0
+        self.ai_speed = 1  # Game speed multiplier for AI training
 
         # Background
         self.bg_img = load_image('background-day.png')
@@ -61,15 +69,32 @@ class Game:
         self.btn_menu = Button(SCREEN_WIDTH//2 - 50, 360, 100, 40, "Menu", (200, 200, 200))
 
     def reset_game(self):
-        self.bird.reset()
         self.pipe_group.empty()
         self.score = 0
         self.game_active = True
-        self.bird_group.add(self.bird) # Ensure bird is in group
+        
+        if self.game_mode == 'manual':
+            self.bird.reset()
+            self.bird_group.add(self.bird)
+        else:  # AI mode
+            # Initialize AI population
+            if not self.ai_brains:
+                self.ai_brains = self.ga.create_population()
+            
+            self.ai_birds = []
+            for brain in self.ai_brains:
+                bird = Bird(brain=brain)
+                self.ai_birds.append(bird)
+            
+            self.ai_generation_start_time = pygame.time.get_ticks()
 
     def run(self):
         while self.running:
-            self.clock.tick(FPS)
+            # AI training speed up
+            if self.state == 'GAME' and self.game_mode == 'auto' and self.game_active:
+                dt = self.clock.tick(FPS * self.ai_speed)
+            else:
+                self.clock.tick(FPS)
             
             # Event Handling
             for event in pygame.event.get():
@@ -102,6 +127,12 @@ class Game:
                     elif self.state == 'GAME':
                         if self.game_mode == 'manual' and self.game_active:
                             self.bird.jump()
+                        elif self.game_mode == 'auto':
+                            # Adjust AI speed with mouse clicks
+                            if event.button == 1:  # Left click - speed up
+                                self.ai_speed = min(self.ai_speed + 1, 10)
+                            elif event.button == 3:  # Right click - slow down
+                                self.ai_speed = max(self.ai_speed - 1, 1)
 
                     elif self.state == 'GAMEOVER':
                         if self.btn_replay.is_clicked(pos):
@@ -169,15 +200,15 @@ class Game:
         
         if self.game_mode == 'manual':
             draw_text(self.screen, "Tap or Space to Fly", 20, SCREEN_WIDTH//2, 250)
+            # Show bird
+            self.bird.rect.center = (50, SCREEN_HEIGHT // 2)
+            self.screen.blit(self.bird.image, self.bird.rect)
         else:
-            draw_text(self.screen, "Initializing Brain...", 20, SCREEN_WIDTH//2, 250)
-            draw_text(self.screen, "Survival of the Fittest", 15, SCREEN_WIDTH//2, 280)
+            draw_text(self.screen, "Neural Network Training", 20, SCREEN_WIDTH//2, 220)
+            draw_text(self.screen, "Population: 50 Birds", 15, SCREEN_WIDTH//2, 250)
+            draw_text(self.screen, "Genetic Algorithm Active", 15, SCREEN_WIDTH//2, 270)
             
         draw_text(self.screen, "Tap to Start", 15, SCREEN_WIDTH//2, 400)
-        
-        # Show bird
-        self.bird.rect.center = (50, SCREEN_HEIGHT // 2)
-        self.screen.blit(self.bird.image, self.bird.rect)
 
     def update_game(self):
         if self.game_active:
@@ -191,38 +222,119 @@ class Game:
                 self.pipe_group.add(top_pipe)
                 self.last_pipe = current_time
 
-            self.bird_group.update()
-            self.pipe_group.update()
+            if self.game_mode == 'manual':
+                self.update_manual_mode()
+            else:
+                self.update_ai_mode()
+    
+    def update_manual_mode(self):
+        """Update game for manual mode"""
+        self.bird_group.update()
+        self.pipe_group.update()
 
-            # Collision
-            if pygame.sprite.groupcollide(self.bird_group, self.pipe_group, False, False) or \
-               self.bird.rect.top <= 0 or self.bird.rect.bottom >= self.ground_y:
-                self.game_active = False
-                self.state = 'GAMEOVER'
-                self.update_high_score()
+        # Collision
+        if pygame.sprite.groupcollide(self.bird_group, self.pipe_group, False, False) or \
+           self.bird.rect.top <= 0 or self.bird.rect.bottom >= self.ground_y:
+            self.game_active = False
+            self.state = 'GAMEOVER'
+            self.update_high_score()
 
-            # Score - Check if bird passed pipe
-            if len(self.pipe_group) > 0:
-                # Get the first pipe in the group (they come in pairs)
-                first_pipe = self.pipe_group.sprites()[0]
+        # Score - Check if bird passed pipe
+        if len(self.pipe_group) > 0:
+            # Get the first pipe in the group (they come in pairs)
+            first_pipe = self.pipe_group.sprites()[0]
+            
+            # If bird is past the pipe and hasn't scored yet
+            if self.bird.rect.left > first_pipe.rect.right and not self.pass_pipe:
+                self.score += 1
+                self.pass_pipe = True
+            
+            # Reset flag when bird is before the next pipe (ready to score again)
+            if self.pass_pipe and self.bird.rect.left < first_pipe.rect.left:
+                self.pass_pipe = False
+    
+    def update_ai_mode(self):
+        """Update game for AI training mode"""
+        # Update pipes
+        self.pipe_group.update()
+        
+        # AI birds think and act
+        alive_count = 0
+        for bird in self.ai_birds:
+            if bird.alive:
+                alive_count += 1
                 
-                # If bird is past the pipe and hasn't scored yet
-                if self.bird.rect.left > first_pipe.rect.right and not self.pass_pipe:
-                    self.score += 1
-                    self.pass_pipe = True
+                # Think and decide
+                if bird.think(self.pipe_group.sprites()):
+                    bird.jump()
                 
-                # Reset flag when bird is before the next pipe (ready to score again)
-                if self.pass_pipe and self.bird.rect.left < first_pipe.rect.left:
-                    self.pass_pipe = False
+                # Update bird
+                bird.update()
+                
+                # Increase fitness for staying alive
+                bird.fitness += 0.1
+                
+                # Bonus fitness for passing pipes
+                if len(self.pipe_group) > 0:
+                    first_pipe = self.pipe_group.sprites()[0]
+                    if bird.rect.left > first_pipe.rect.left and bird.rect.right < first_pipe.rect.right:
+                        bird.fitness += 0.5
+                    elif bird.rect.left > first_pipe.rect.right:
+                        bird.fitness += 5.0
+                
+                # Check collision
+                bird_group_temp = pygame.sprite.GroupSingle(bird)
+                if pygame.sprite.groupcollide(bird_group_temp, self.pipe_group, False, False) or \
+                   bird.rect.top <= 0 or bird.rect.bottom >= self.ground_y:
+                    bird.alive = False
+        
+        # Update score (track best bird)
+        best_fitness = max([bird.fitness for bird in self.ai_birds])
+        self.score = int(best_fitness)
+        
+        # Check if all birds are dead or timeout
+        generation_time = pygame.time.get_ticks() - self.ai_generation_start_time
+        if alive_count == 0 or generation_time > 30000:  # 30 second timeout
+            self.evolve_population()
+            self.reset_game()  # Start new generation
 
     def draw_game(self):
         self.pipe_group.draw(self.screen)
-        self.bird_group.draw(self.screen)
         
-        # Draw Score
-        score_surf = self.font.render(str(self.score), True, WHITE)
-        score_rect = score_surf.get_rect(center=(SCREEN_WIDTH//2, 50))
-        self.screen.blit(score_surf, score_rect)
+        if self.game_mode == 'manual':
+            self.bird_group.draw(self.screen)
+        else:
+            # Draw all alive AI birds
+            for bird in self.ai_birds:
+                if bird.alive:
+                    self.screen.blit(bird.image, bird.rect)
+            
+            # Draw AI stats
+            stats = self.ga.get_stats([bird.fitness for bird in self.ai_birds])
+            alive_count = sum(1 for bird in self.ai_birds if bird.alive)
+            
+            # Stats panel
+            panel_height = 120
+            panel = pygame.Surface((SCREEN_WIDTH, panel_height))
+            panel.set_alpha(200)
+            panel.fill((50, 50, 50))
+            self.screen.blit(panel, (0, 0))
+            
+            draw_text(self.screen, f"Gen: {stats['generation']}", 15, 60, 15, WHITE)
+            draw_text(self.screen, f"Alive: {alive_count}/{len(self.ai_birds)}", 15, 60, 35, WHITE)
+            draw_text(self.screen, f"Best: {int(stats['max_fitness'])}", 15, 60, 55, WHITE)
+            draw_text(self.screen, f"Avg: {int(stats['avg_fitness'])}", 15, 60, 75, WHITE)
+            draw_text(self.screen, f"Record: {int(stats['best_ever'])}", 15, 60, 95, WHITE)
+            
+            draw_text(self.screen, f"Speed: {self.ai_speed}x", 15, SCREEN_WIDTH - 50, 15, WHITE)
+            draw_text(self.screen, "L-Click: Speed Up", 12, SCREEN_WIDTH - 80, 35, WHITE)
+            draw_text(self.screen, "R-Click: Slow Down", 12, SCREEN_WIDTH - 80, 50, WHITE)
+        
+        # Draw Score (for manual mode, or best fitness for AI)
+        if self.game_mode == 'manual':
+            score_surf = self.font.render(str(self.score), True, WHITE)
+            score_rect = score_surf.get_rect(center=(SCREEN_WIDTH//2, 50))
+            self.screen.blit(score_surf, score_rect)
 
     def draw_game_over(self):
         # Draw game elements frozen
@@ -251,3 +363,13 @@ class Game:
         else:
             if self.score > self.high_score_auto:
                 self.high_score_auto = self.score
+    
+    def evolve_population(self):
+        """Evolve the AI bird population using genetic algorithm"""
+        fitness_scores = [bird.fitness for bird in self.ai_birds]
+        self.ai_brains = self.ga.evolve(self.ai_brains, fitness_scores)
+        
+        # Update high score with best fitness
+        stats = self.ga.get_stats(fitness_scores)
+        if int(stats['max_fitness']) > self.high_score_auto:
+            self.high_score_auto = int(stats['max_fitness'])
